@@ -1,0 +1,13 @@
+.DS_Store
+*.pyc
+*.csv
+data/
+__pycache__
+deps.words*
+vim.exe.stackdump
+*.pickle
+*.vec
+*.model
+*.conll
+*.converted
+*.jar
