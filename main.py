@@ -12,59 +12,29 @@ import pdb
 import argparse
 import tensorflow as tf
 
-from tensorflow.keras.layers import Lambda, Input, Dense, Conv2D, Reshape, Conv2DTranspose
+from tensorflow.keras.layers import Lambda, Input, Dense, Conv2D, Conv2DTranspose, Reshape
 from tensorflow.keras.models import Model
 from tensorflow.keras.losses import binary_crossentropy
 from tensorflow.keras.utils import plot_model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import backend as K
-
-
+from mpl_toolkits.axes_grid1 import ImageGrid
 
 # Feel free to change this, so long it is an sklearn class that implements fit()
 # and predict()
 TASK_2A_AUTOGRADER_CLASSIFIER = sklearn.linear_model.LogisticRegression
-
-def plot_results(vae, x_test):
-	"""Plots labels and MNIST digits as a function of the 2D latent vector
-
-	# Arguments
-		models (tuple): encoder and decoder models
-		data (tuple): test data and label
-		batch_size (int): prediction batch size
-		model_name (string): which model is using this function
-	"""
-
-	x_test = np.expand_dims(x_test, -1)
-	x_re = vae.predict(x_test, batch_size=len(x_test))
-
-	'''
-	fig, axs = plt.subplots(len(x_test), 2)
-	for i in range(len(x_test)):
-		pdb.set_trace()
-		axs[i, 0].imshow(np.clip(x_test[i] * 255, 0, 255).reshape(64, 64).astype(np.uint8))
-		axs[i, 1].imshow(np.clip(x_re[i] * 255, 0, 255).reshape(64, 64).astype(np.uint8))
-	plt.show()
-	'''
-	for i in range(len(x_test)):
-		fig, axs = plt.subplots(1, 2)
-		axs[0].imshow(np.clip(np.around(x_test[i] * 255), 0, 255).reshape(64, 64).astype(np.uint8), cmap='Greys_r')
-		axs[1].imshow(np.clip(np.around(x_re[i] * 255), 0, 255).reshape(64, 64).astype(np.uint8), cmap='Greys_r')
-		plt.show()
-	pdb.set_trace()
-	print('123')
+IMAGE_SIZE = 64
 
 class VAEdSprite(object):
 	def __init__(self, args):
+		super(VAEdSprite, self).__init__()
 		self.args = args
 		# VAE model = encoder + decoder
 
 		# build encoder model
-		image_size = 64
-		original_dim = image_size * image_size
-
-		inputs = Input(shape=(image_size, image_size, 1), name='encoder_input')
-		x = Conv2D(filters=32, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='he_normal')(inputs)
+		inputs = Input(shape=(IMAGE_SIZE, IMAGE_SIZE), name='encoder_input')
+		x = Reshape((IMAGE_SIZE, IMAGE_SIZE, 1))(inputs)
+		x = Conv2D(filters=32, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='he_normal')(x)
 		x = Conv2D(filters=32, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='he_normal')(x)
 		x = Conv2D(filters=64, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='he_normal')(x)
 		x = Conv2D(filters=64, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='he_normal')(x)
@@ -89,7 +59,8 @@ class VAEdSprite(object):
 		x = Conv2DTranspose(filters=64, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='he_normal')(x)
 		x = Conv2DTranspose(filters=32, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='he_normal')(x)
 		x = Conv2DTranspose(filters=32, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='he_normal')(x)
-		x_re = Conv2DTranspose(filters=1, kernel_size=4, strides=2, padding='same', activation='sigmoid', kernel_initializer='he_normal')(x)
+		x = Conv2DTranspose(filters=1, kernel_size=4, strides=2, padding='same', activation='sigmoid', kernel_initializer='he_normal')(x)
+		x_re = Reshape((IMAGE_SIZE, IMAGE_SIZE))(x)
 
 		# instantiate decoder model
 		self.decoder = Model(latent_inputs, x_re, name='decoder')
@@ -102,7 +73,7 @@ class VAEdSprite(object):
 
 		inputs = Reshape((4096,))(inputs)
 		outputs = Reshape((4096,))(outputs)
-		reconstruction_loss = original_dim * binary_crossentropy(inputs, outputs)
+		reconstruction_loss = (IMAGE_SIZE * IMAGE_SIZE) * binary_crossentropy(inputs, outputs)
 		kl_loss = K.sum(0.5 * (K.square(z_mean) + K.exp(z_log_var) - z_log_var - 1), axis=-1)
 
 		self.beta = K.variable(args.beta, name='beta', dtype=tf.float32)
@@ -132,8 +103,9 @@ class VAEdSprite(object):
 	def load(self):
 		"""Restores the model parameters. Called once by grader before sample_*."""
 		# TODO(student): Implement.
+		self.vae.load_weights(self.args.model_filename)
 
-	def fit(self, train_images):
+	def fit(self, train_images, callbacks=None):
 		"""Trains beta VAE.
 
 		Args:
@@ -141,11 +113,8 @@ class VAEdSprite(object):
 				values are used: 0 and 1 (where 1 == "on" or "white"). To directly plot
 				the image, you can visualize e.g. imshow(train_images[0] * 255).
 		"""
-		x_train = np.expand_dims(train_images, -1)
-		history = self.vae.fit(x_train, epochs=self.args.epochs, batch_size=self.args.batch_size)
-		self.vae.save(self.args.save_filename)
-
-		pdb.set_trace()
+		history = self.vae.fit(train_images, epochs=self.args.epochs, batch_size=self.args.batch_size, callbacks=callbacks)
+		self.vae.save_weights(self.args.model_filename)
 		return history
 
 
@@ -162,7 +131,7 @@ class VAEdSprite(object):
 			3D array, 4d, ...), as long as the first dimension is N. The latent
 			variables for batch_x[i] should be on return[i].
 		"""
-		pass
+		return self.encoder.predict(batch_x)[2]
 
 
 	def reconstruct_x_given_z(self, batch_z):
@@ -173,17 +142,15 @@ class VAEdSprite(object):
 				sample_z_given_x
 
 		Returns:
-			uint8 3D array: one image
+			np.float32 3D array: one image
 		"""
-		pass
-
+		return self.decoder.predict(batch_z)
 
 
 # TODO(student): You can make this class inherit class VAEdSprite.
-class SSLatentVAE(object):
-
-	def sample_z_given_x(self, batch_x):
-		"""Same as above. Maybe can be removed, if inherits from VAEdSprite."""
+class SSLatentVAE(VAEdSprite):
+	def __init__(self, args):
+		super(SSLatentVAE, self).__init__(args)
 
 	def get_partition_indices(self):
 		"""Returns list of 5 pairs (start_idx, end_idx) with start_idx inclusive.
@@ -196,18 +163,67 @@ class SSLatentVAE(object):
 		# TODO(student): Implement.
 		return [(0, 0)] * 5  # Violates due to overlaps; and not end_idx > start_idx
 
-	def load(self):
-		pass
+class PlotCallback(tf.keras.callbacks.Callback):
+	def on_epoch_end(self, epoch, logs=None):
+		self.plot_test(self.md, self.x_test, epoch)
+		self.plot_inter(self.md, self.x_inter, epoch)
+
+	@staticmethod
+	def plot_test(md, x_test, epoch=0):
+		n_test = len(x_test)
+		x_re = md.vae.predict(x_test)
+
+		fig = plt.figure(1, (n_test, 2.))
+		grid = ImageGrid(fig, 111, nrows_ncols=(2, n_test), axes_pad=0.05)
+
+		for i in range(n_test):
+			PlotCallback.cell_imshow(grid[i], x_test[i])
+			PlotCallback.cell_imshow(grid[i+n_test], x_re[i])
+
+		grid[0].set_ylabel('Input')
+		grid[n_test].set_ylabel('Reconstruct')
+		plt.savefig('reconstruct/epoch_{}.pdf'.format(epoch))
+		plt.close()
+
+	@staticmethod
+	def cell_imshow(cell, img):
+		cell.imshow(np.clip(np.around(img * 255), 0, 255).astype(np.uint8), cmap='Greys_r')
+		cell.set_xticks([])
+		cell.set_yticks([])
+
+	@staticmethod
+	def plot_inter(md, x_inter, epoch=0):
+		n_inter = len(x_inter)
+		z_inter = md.sample_z_given_x(x_inter.reshape(-1, IMAGE_SIZE, IMAGE_SIZE)).reshape(n_inter, 2, -1)
+
+		fig = plt.figure(1, (8, n_inter))
+		grid = ImageGrid(fig, 111, nrows_ncols=(n_inter, 8), axes_pad=0.05)
+
+		for i in range(n_inter):
+			PlotCallback.cell_imshow(grid[i*8], x_inter[i, 0])
+			for j, alpha in enumerate([1.0, 0.8, 0.6, 0.4, 0.2, 0.0]):
+				z = alpha * z_inter[i, 0] + (1-alpha) * z_inter[i, 1]
+				x = md.reconstruct_x_given_z(np.expand_dims(z, 0))[0]
+
+				PlotCallback.cell_imshow(grid[i*8+j+1], x)
+			PlotCallback.cell_imshow(grid[i*8+7], x_inter[i, 1])
+
+		for i, t in enumerate(['a', '1.0', '0.8', '0.6', '0.4', '0.2', '0.0', 'b']):
+			grid[i].set_title(t)
+
+		plt.savefig('interpolate/epoch_{}.pdf'.format(epoch))
+		plt.close()
+
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description='Beta-VAE')
 	parser.add_argument('--dataset', default='dsprites.npz', type=str, help='dataset filename')
 	parser.add_argument('--ids', default='ids.npz', type=str, help='id filename')
 	parser.add_argument('--beta', default=5, type=float, help='weight for KL-divergence loss')
-	parser.add_argument('--batch_size', default=256, type=int, help='batch size')
+	parser.add_argument('--batch_size', default=1024, type=int, help='batch size')
 	parser.add_argument('--latent_dim', default=10, type=int, help='latent dim')
-	parser.add_argument('--epochs', default=10, type=int, help='epochs')
-	parser.add_argument('--save_filename', default='vae_cnn.h5', type=str, help='save filename')
+	parser.add_argument('--epochs', default=100, type=int, help='epochs')
+	parser.add_argument('--model_filename', default='vae_cnn.h5', type=str, help='model filename')
 	args = parser.parse_args()
 	print(args)
 
@@ -215,15 +231,21 @@ if __name__ == '__main__':
 	dataset = np.load(args.dataset)
 	ids = np.load(args.ids)
 	print('Files in dataset:', dataset.files)
+	print('Files in ids:', ids.files)
 
 	all_imgs = dataset['imgs']
 	x_train = all_imgs[ids['train']]
 	x_test = all_imgs[ids['test_reconstruct']]
+	x_inter = all_imgs[ids['test_interpolate']]
 
-	vae = VAEdSprite(args)
-	vae.fit(x_train)
+	cb = PlotCallback()
+	cb.x_test = x_test
+	cb.x_inter = x_inter
 
-	plot_results(x_test, vae, batch_size=len(x_test), model_name="vae_cnn")
+	md = VAEdSprite(args)
+	cb.md = md
+	md.fit(x_train, [cb])
+	#PlotCallback.plot_test(x_test, vae, batch_size=len(x_test), model_name="vae_cnn")
 
 	pdb.set_trace()
 	print('Done')
