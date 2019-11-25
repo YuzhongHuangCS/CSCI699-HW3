@@ -5,6 +5,8 @@
 # Email: yuzhongh@usc.edu
 
 import os
+#os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
 import numpy as np
 import sklearn.linear_model
 import matplotlib.pyplot as plt
@@ -12,13 +14,14 @@ import pdb
 import argparse
 import tensorflow as tf
 
-import keras
-from keras.layers import Lambda, Input, Dense, Conv2D, Conv2DTranspose, Reshape, Activation
-from keras.models import Model
-from keras.losses import binary_crossentropy
-from keras.utils import plot_model
-from keras.optimizers import Adam
-from keras import backend as K
+from tensorflow import keras
+#import keras
+from tensorflow.keras.layers import Lambda, Input, Dense, Conv2D, Conv2DTranspose, Reshape, Activation
+from tensorflow.keras.models import Model
+from tensorflow.keras.losses import binary_crossentropy, sparse_categorical_crossentropy
+from tensorflow.keras.utils import plot_model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras import backend as K
 from mpl_toolkits.axes_grid1 import ImageGrid
 
 # Feel free to change this, so long it is an sklearn class that implements fit()
@@ -34,6 +37,8 @@ class VAEdSprite(object):
 
 		# build encoder model
 		inputs = Input(shape=(IMAGE_SIZE, IMAGE_SIZE), name='encoder_input')
+		label_inputs = Input(shape=(6, ), dtype=tf.int32, name='label_input')
+
 		x = Reshape((IMAGE_SIZE, IMAGE_SIZE, 1))(inputs)
 		x = Conv2D(filters=32, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='he_normal')(x)
 		x = Conv2D(filters=32, kernel_size=4, strides=2, padding='same', activation='relu', kernel_initializer='he_normal')(x)
@@ -48,7 +53,7 @@ class VAEdSprite(object):
 		z = Lambda(self.sampling, name='z')([z_mean, z_log_var])
 
 		# instantiate encoder model
-		self.encoder = Model(inputs, [z_mean, z_log_var, z], name='encoder')
+		self.encoder = Model([inputs, label_inputs], [z_mean, z_log_var, z], name='encoder')
 		self.encoder.summary()
 		plot_model(self.encoder, to_file='vae_cnn_encoder.pdf', show_shapes=True)
 
@@ -69,20 +74,33 @@ class VAEdSprite(object):
 		plot_model(self.decoder, to_file='vae_cnn_decoder.pdf', show_shapes=True)
 
 		# build entire model
-		outputs = self.decoder(self.encoder(inputs)[2])
-		self.vae = Model(inputs, outputs, name='vae_cnn')
+		outputs = self.decoder(self.encoder([inputs, label_inputs])[2])
+		self.vae = Model([inputs, label_inputs], outputs, name='vae_cnn')
 
 		inputs = Reshape((4096,))(inputs)
 		logits = Reshape((4096,))(outputs[0])
-		reconstruction_loss = K.mean((IMAGE_SIZE * IMAGE_SIZE) * binary_crossentropy(inputs, logits, from_logits=True))
+		reconstruct_loss = K.mean((IMAGE_SIZE * IMAGE_SIZE) * binary_crossentropy(inputs, logits, from_logits=True))
 		kl_loss = K.mean(K.sum(0.5 * (K.square(z_mean) + K.exp(z_log_var) - z_log_var - 1), axis=-1))
+
+		n_sup = K.cast(K.sum(label_inputs[:, 5]), tf.float32)
+		shape_l = K.sum(sparse_categorical_crossentropy(label_inputs[:, 0], z[:, :3], from_logits=True) * K.cast(label_inputs[:, 5], tf.float32)) / n_sup
+		scale_l = K.sum(sparse_categorical_crossentropy(label_inputs[:, 1], z[:, 3:9], from_logits=True) * K.cast(label_inputs[:, 5], tf.float32)) / n_sup
+		ori_l = K.sum(sparse_categorical_crossentropy(label_inputs[:, 2], z[:, 9:49], from_logits=True) * K.cast(label_inputs[:, 5], tf.float32)) / n_sup
+		posx_l = K.sum(sparse_categorical_crossentropy(label_inputs[:, 3], z[:, 49:81], from_logits=True) * K.cast(label_inputs[:, 5], tf.float32)) / n_sup
+		posy_l = K.sum(sparse_categorical_crossentropy(label_inputs[:, 4], z[:, 81:], from_logits=True) * K.cast(label_inputs[:, 5], tf.float32)) / n_sup
 
 		self.beta = K.variable(args.beta, name='beta', dtype=tf.float32)
 		self.beta._trainable = False
-		vae_loss = reconstruction_loss + self.beta * kl_loss
+
+		vae_loss = reconstruct_loss + self.beta * kl_loss + (shape_l + scale_l + ori_l + posx_l + posy_l) * 10
 		self.vae.add_loss(vae_loss)
-		self.vae.add_metric(reconstruction_loss, 'reconstruction_loss')
-		self.vae.add_metric(kl_loss, 'kl_loss')
+		self.vae.add_metric(reconstruct_loss, 'reconstruct_l')
+		self.vae.add_metric(kl_loss, 'kl_l')
+		self.vae.add_metric(shape_l, 'shape_l')
+		self.vae.add_metric(scale_l, 'scale_l')
+		self.vae.add_metric(ori_l, 'ori_l')
+		self.vae.add_metric(posx_l, 'posx_l')
+		self.vae.add_metric(posy_l, 'posy_l')
 
 		adam = Adam(lr=1e-4, beta_1=0.9, beta_2=0.999, amsgrad=False)
 		self.vae.compile(optimizer=adam)
@@ -106,8 +124,19 @@ class VAEdSprite(object):
 	def load(self):
 		"""Restores the model parameters. Called once by grader before sample_*."""
 		# TODO(student): Implement.
-		#self.vae.load_weights(self.args.model_filename)
-		self.vae.load_weights('vae_cnn_6.h5')
+		self.vae.load_weights(self.args.model_filename)
+		'''
+		m = keras.models.load_model('vae.model', compile=False)
+		m.load_weights('vae_cnn_99.h5')
+
+		i = 0
+		for w in self.vae.trainable_weights:
+			if w.shape == m.trainable_weights[i].shape:
+				K.set_value(w, 	K.get_value(m.trainable_weights[i]))
+				i += 1
+				print(w.name)
+		print('#Loaded layers', i)
+		'''
 
 	def fit(self, train_images, callbacks=None):
 		"""Trains beta VAE.
@@ -167,18 +196,39 @@ class SSLatentVAE(VAEdSprite):
 		flat version.
 		"""
 		# TODO(student): Implement.
-		return [(3, 4), (4, 6), (0, 3), (6, 9), (9, 10)]
+		return [(0, 3), (3, 9), (9, 49), (49, 81), (81, 113)]
+
+	def sample_z_given_x(self, batch_x):
+		"""Computes latent variables given an image batch.
+
+		Args:
+			batch_x: same type as `train_images` in `fit`. But the number of images
+				for this function will be much smaller than of `fit`. Let N be number of
+				images.
+
+		Returns:
+			Should return float32 numpy array with any number of dimensions (matrix,
+			3D array, 4d, ...), as long as the first dimension is N. The latent
+			variables for batch_x[i] should be on return[i].
+		"""
+		label_test = np.zeros((len(batch_x), 6)).astype(np.int32)
+		return self.encoder.predict([batch_x, label_test])[2]
 
 class PlotCallback(keras.callbacks.Callback):
 	def on_epoch_end(self, epoch, logs=None):
+		if os.path.exists('stop.lock'):
+			pdb.set_trace()
+			print('Stop here')
 		self.md.vae.save_weights('vae_cnn_{}.h5'.format(epoch))
 		self.plot_test(self.md, self.x_test, epoch)
 		self.plot_inter(self.md, self.x_inter, epoch)
+		self.plot_mix(self.md, self.x_inter, epoch)
 
 	@staticmethod
 	def plot_test(md, x_test, epoch=0):
 		n_test = len(x_test)
-		x_re = md.vae.predict(x_test)[1]
+		label_test = np.zeros((n_test, 6)).astype(np.int32)
+		x_re = md.vae.predict([x_test, label_test])[1]
 
 		fig = plt.figure(1, (n_test, 2.))
 		grid = ImageGrid(fig, 111, nrows_ncols=(2, n_test), axes_pad=0.05)
@@ -201,6 +251,7 @@ class PlotCallback(keras.callbacks.Callback):
 	@staticmethod
 	def plot_inter(md, x_inter, epoch=0):
 		n_inter = len(x_inter)
+		#label_inter = np.zeros((n_inter*2, 6)).astype(np.int32)
 		z_inter = md.sample_z_given_x(x_inter.reshape(-1, IMAGE_SIZE, IMAGE_SIZE)).reshape(n_inter, 2, -1)
 
 		fig = plt.figure(1, (8, n_inter))
@@ -221,15 +272,43 @@ class PlotCallback(keras.callbacks.Callback):
 		plt.savefig('interpolate/epoch_{}.pdf'.format(epoch))
 		plt.close()
 
+	@staticmethod
+	def plot_mix(md, x_mix, epoch=0):
+		n_mix = len(x_mix)
+		label_inter = np.zeros((n_mix*2, 6)).astype(np.int32)
+		z_inter = md.sample_z_given_x(x_mix.reshape(-1, IMAGE_SIZE, IMAGE_SIZE)).reshape(n_mix, 2, -1)
+
+		fig = plt.figure(1, (3, n_mix))
+		grid = ImageGrid(fig, 111, nrows_ncols=(n_mix, 3), axes_pad=0.05)
+		s = md.get_partition_indices()
+		slices = [s[0], (s[0][0], s[1][1]), s[2], (s[3][0], s[4][1]), s[4]]
+		fname = ['shape', 'shape\nscale', 'orientation', 'pos x\npos y', 'pos y']
+
+		for i in range(n_mix):
+			PlotCallback.cell_imshow(grid[i*3], x_mix[i, 1])
+			grid[i*3].set_ylabel(fname[i])
+
+			z = z_inter[i, 0]
+			z[slices[i][0]:slices[i][1]] = z_inter[i, 1][slices[i][0]:slices[i][1]]
+			x = md.reconstruct_x_given_z(np.expand_dims(z, 0))[0]
+			PlotCallback.cell_imshow(grid[i*3+1], x)
+			PlotCallback.cell_imshow(grid[i*3+2], x_mix[i, 0])
+
+		for i, t in enumerate(['Add', 'Mixed', 'Base']):
+			grid[i].set_title(t)
+
+		plt.savefig('mix/epoch_{}.pdf'.format(epoch))
+		plt.close()
+
 def get_args():
 	parser = argparse.ArgumentParser(description='Beta-VAE')
 	parser.add_argument('--dataset', default='dsprites.npz', type=str, help='dataset filename')
 	parser.add_argument('--ids', default='ids.npz', type=str, help='id filename')
 	parser.add_argument('--beta', default=2, type=float, help='weight for KL-divergence loss')
 	parser.add_argument('--batch_size', default=1024, type=int, help='batch size')
-	parser.add_argument('--latent_dim', default=10, type=int, help='latent dim')
-	parser.add_argument('--epochs', default=100, type=int, help='epochs')
-	parser.add_argument('--model_filename', default='vae_cnn.h5', type=str, help='model filename')
+	parser.add_argument('--latent_dim', default=113, type=int, help='latent dim')
+	parser.add_argument('--epochs', default=500, type=int, help='epochs')
+	parser.add_argument('--model_filename', default='vae_cnn_413.h5', type=str, help='model filename')
 	args = parser.parse_args()
 	return args
 
@@ -248,16 +327,31 @@ if __name__ == '__main__':
 	x_test = all_imgs[ids['test_reconstruct']]
 	x_inter = all_imgs[ids['test_interpolate']]
 
+	unsup_train_classes = np.zeros((len(x_train), 6))
+	sup_train_images = all_imgs[ids['supervised_train']]
+	sup_train_classes = dataset['latents_classes'][ids['supervised_train']][:, 1:]
+	sup_train_flags = np.ones((len(sup_train_images), 1))
+	sup_train_classes = np.hstack([sup_train_classes, sup_train_flags])
+
+	x_all = np.vstack([x_train, sup_train_images])
+	label_all = np.vstack([unsup_train_classes, sup_train_classes]).astype(np.int32)
+
 	cb = PlotCallback()
 	cb.x_test = x_test
 	cb.x_inter = x_inter
 
-	md = VAEdSprite(args)
+	md = SSLatentVAE(args)
 	cb.md = md
 	md.load()
-	pdb.set_trace()
-	md.fit(x_train, [cb])
-	#PlotCallback.plot_test(x_test, vae, batch_size=len(x_test), model_name="vae_cnn")
 
-	pdb.set_trace()
+	#np.random.seed(1234)
+	#np.random.shuffle(x_train)
+	#md.fit({'encoder_input': x_all, 'label_input': label_all}, [cb])
+	#for i, s in enumerate(range(0, len(x_train), 10)):
+	#	print(i, s)
+
+	x_mix = x_train[(36, 37, 82, 83, 2884, 2885, 624, 625, 1344, 1345), :, :].reshape(5, 2, 64, 64)
+	PlotCallback.plot_mix(md, x_mix, 0)
+
+	#pdb.set_trace()
 	print('Done')
